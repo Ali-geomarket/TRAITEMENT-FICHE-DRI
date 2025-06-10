@@ -1,0 +1,8 @@
+streamlit
+pandas
+openpyxl
+requests
+geopandas
+matplotlib
+shapely
+plotly
