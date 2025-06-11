@@ -259,6 +259,9 @@ elif st.session_state["authenticated"]:
                 date_reception = st.date_input("Date de réception (jj/mm/aaaa)", format="DD/MM/YYYY")
                 reseau = st.text_input("Réseau")
                 type_demande_input = st.radio("Type de demande", ["1 - DEPASSEMENT DE COUT", "2 - DEMANDE DE MA"])
+                nom_commande = st.text_input("Nom de la commande (ex: OXO_222-1)")
+                fichier_kmz = st.file_uploader("Fichier KMZ des nouveaux BPE", type=["kmz"])
+                fichier_gdb = st.file_uploader("Fichier GDB des parcelles réseau", type=["gdb", "zip"])
                 demande_type = "DEPASSEMENT DE COUT" if type_demande_input.startswith("1") else "DEMANDE DE MA"
                 commentaire = st.text_area("Commentaire (optionnel)")
                 fiche_dri_file = st.file_uploader("Fichier Excel de la fiche DRI", type="xlsx")
@@ -290,6 +293,9 @@ elif st.session_state["authenticated"]:
                         "RESP GEOMARKET": "",
                         "CONCLUSION": "",
                         "COMMENTAIRE": commentaire
+                        "FICHIER_KMZ": fichier_kmz,
+                        "FICHIER_GDB": fichier_gdb,
+                        "NOM_COMMANDE": nom_commande,
                     }
 
                     st.session_state["ligne_temporaire"] = ligne
