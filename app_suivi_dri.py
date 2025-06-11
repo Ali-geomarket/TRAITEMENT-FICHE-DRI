@@ -14,7 +14,295 @@ import base64
 import time
 from openpyxl.styles import PatternFill, Font
 import plotly.express as px
+import fiona
+import zipfile
+from fastkml import kml
 
+def creer_zip_final(chemin_shp1, chemin_shp2, image_tcd_buf, nom_commande):
+    import shutil
+    import glob
+
+    try:
+        temp_dir = tempfile.mkdtemp()
+        zip_path = os.path.join(temp_dir, f"{nom_commande}_EXPORT.zip")
+
+        # Récupérer tous les fichiers liés aux SHP (shp, shx, dbf, prj, cpg, etc.)
+        def copier_shp(chemin_shp, dossier_dest, prefix):
+            base = chemin_shp.replace(".shp", "")
+            for f in glob.glob(base + ".*"):
+                ext = os.path.splitext(f)[1]
+                dest = os.path.join(dossier_dest, f"{prefix}{ext}")
+                shutil.copy(f, dest)
+
+        copier_shp(chemin_shp1, temp_dir, f"BPE_{nom_commande}")
+        copier_shp(chemin_shp2, temp_dir, f"SYNTH_{nom_commande}")
+
+        # Enregistrer image PNG
+        image_path = os.path.join(temp_dir, f"TCD_MA_{nom_commande}.png")
+        with open(image_path, "wb") as f:
+            f.write(image_tcd_buf.getbuffer())
+
+        # Création du ZIP
+        with zipfile.ZipFile(zip_path, "w") as zipf:
+            for filename in os.listdir(temp_dir):
+                if filename != os.path.basename(zip_path):  # ne pas inclure le zip lui-même
+                    zipf.write(os.path.join(temp_dir, filename), arcname=filename)
+
+        return zip_path, None
+
+    except Exception as e:
+        return None, f"Erreur création ZIP : {e}"
+
+
+def generer_image_tcd_ma(gdf_synthese, nom_commande):
+    import matplotlib.pyplot as plt
+    from io import BytesIO
+
+    try:
+        # TCD
+        pivot = pd.pivot_table(
+            gdf_synthese,
+            index="NB_SALARIE",
+            columns="GAIN_ENTREPRISE",
+            values="SIRET",
+            aggfunc="count",
+            margins=True,
+            margins_name="Total général",
+            fill_value=0
+        )
+
+        ordered_cols = [
+            "Nouvellement forfaitaire",
+            "Changement forfaitaire",
+            "Pas de changement"
+        ]
+        existing_cols = [col for col in ordered_cols if col in pivot.columns]
+        pivot = pivot[existing_cols + ["Total général"]]
+        pivot = pivot.sort_index()
+
+        # Résumé
+        counts = gdf_synthese["GAIN_ENTREPRISE"].value_counts()
+        phrases = []
+        if "Nouvellement forfaitaire" in counts:
+            phrases.append(f"- {counts['Nouvellement forfaitaire']} entreprises deviennent éligibles forfaitairement")
+        if "Changement forfaitaire" in counts:
+            phrases.append(f"- {counts['Changement forfaitaire']} entreprises changent de zone forfaitaire positivement")
+
+        # Image matplotlib
+        fig, ax = plt.subplots(figsize=(11, len(pivot) * 0.6 + len(phrases) * 0.6 + 2))
+        y_offset = 0.1
+        for i, phrase in enumerate(phrases):
+            ax.text(0, 1 - y_offset * (i + 1), phrase, fontsize=10, ha='left')
+        ax.axis('off')
+
+        table_data = [[idx] + list(row) for idx, row in pivot.iterrows()]
+        col_labels = ["NB_SALARIE"] + pivot.columns.to_list()
+
+        table = ax.table(
+            cellText=table_data,
+            colLabels=col_labels,
+            loc='center',
+            cellLoc='center'
+        )
+        table.auto_set_font_size(False)
+        table.set_fontsize(10)
+        table.scale(1.2, 1.3)
+
+        for key, cell in table.get_celld().items():
+            row, col = key
+            cell.set_text_props(wrap=True)
+            if row == 0:
+                cell.set_facecolor('#d3d3d3')
+                cell.set_text_props(weight='bold')
+            elif col == 0:
+                cell.set_facecolor('#f0f0f0')
+            if row > 0 and pivot.index[row - 1] == "Total général":
+                cell.set_facecolor('#f5e6cc')
+                cell.set_text_props(weight='bold')
+
+        # Enregistrer dans buffer mémoire
+        buf = BytesIO()
+        plt.savefig(buf, format="png", bbox_inches='tight', dpi=300)
+        buf.seek(0)
+        return buf, None
+
+    except Exception as e:
+        return None, f"Erreur génération image TCD : {e}"
+
+def generer_synthese_finale(gdf, nom_commande):
+    try:
+        gdf_synthese = gdf.copy()
+
+        # Nettoyage colonnes
+        cols_to_drop = [col for col in gdf_synthese.columns if "_predicate" in col or "l1_normali" in col]
+        gdf_synthese = gdf_synthese.drop(columns=cols_to_drop, errors="ignore")
+
+        # Arrondir DISTANCE + conversion
+        gdf_synthese["DISTANCE"] = gdf_synthese["DISTANCE"].round().astype(int)
+
+        # Renommer Z_BPE
+        gdf_synthese = gdf_synthese.rename(columns={"Z_BPE": "THD_ACTUELLE"})
+
+        # Générer THD_FINALE
+        def get_thd_finale(actuelle, extension):
+            if not actuelle or not extension:
+                return "INDETERMINE"
+            try:
+                num_act = int(actuelle[-1])
+                num_ext = int(extension[-1])
+                if num_ext <= num_act:
+                    return actuelle
+                else:
+                    return f"THD {actuelle[-1]} A {extension[-1]}"
+            except:
+                return "INDETERMINE"
+        gdf_synthese["THD_FINALE"] = gdf_synthese.apply(lambda row: get_thd_finale(row["THD_ACTUELLE"], row["THD_EXTENSION"]), axis=1)
+
+        # GAIN_ENTREPRISE
+        def get_gain(val):
+            if "5 A" in val:
+                return "Nouvellement forfaitaire"
+            elif "ZONE" in val:
+                return "Pas de changement"
+            else:
+                return "Changement forfaitaire"
+        gdf_synthese["GAIN_ENTREPRISE"] = gdf_synthese["THD_FINALE"].apply(get_gain)
+
+        # Ajouter commande
+        gdf_synthese["COMMANDE"] = nom_commande
+
+        # Export SHP
+        export_dir = tempfile.mkdtemp()
+        shp_path = os.path.join(export_dir, f"{nom_commande}_synthese.shp")
+        gdf_synthese.to_file(shp_path, driver="ESRI Shapefile")
+
+        return gdf_synthese, shp_path, None
+
+    except Exception as e:
+        return None, None, f"Erreur synthèse finale : {e}"
+
+def attribuer_thd_extension(gdf_bpe, thd_buffers):
+    try:
+        gdf_result = gdf_bpe.copy()
+
+        # Distance minimale à un BPE
+        bpe_points = gdf_bpe.geometry
+        gdf_result["DISTANCE"] = gdf_result.geometry.apply(lambda geom: bpe_points.distance(geom).min())
+        gdf_result["DISTANCE"] = gdf_result["DISTANCE"].round().astype(int)
+
+        # THD_EXTENSION par seuils
+        def get_thd_zone(dist):
+            if dist < 100:
+                return "THD ZONE 1"
+            elif dist < 200:
+                return "THD ZONE 2"
+            elif dist < 300:
+                return "THD ZONE 3"
+            elif dist < 500:
+                return "THD ZONE 4"
+            else:
+                return None
+        gdf_result["THD_EXTENSION"] = gdf_result["DISTANCE"].apply(get_thd_zone)
+
+        # THD actuelle (Z_BPE) via croisement spatial avec buffers
+        gdf_result["Z_BPE"] = None
+        for zone_name, buffer_gdf in thd_buffers.items():
+            matched = gpd.sjoin(gdf_result[gdf_result["Z_BPE"].isna()], buffer_gdf, how="inner", predicate="intersects")
+            if not matched.empty:
+                gdf_result.loc[matched.index, "Z_BPE"] = zone_name
+
+        # Ce qui reste non assigné = Z_BPE = THD ZONE 5
+        gdf_result["Z_BPE"] = gdf_result["Z_BPE"].fillna("THD ZONE 5")
+
+        return gdf_result, None
+
+    except Exception as e:
+        return None, f"Erreur attribution THD : {e}"
+
+
+def traiter_kmz(fichier_kmz, nom_commande):
+    import tempfile
+    from pathlib import Path
+
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            kmz_path = os.path.join(tmpdir, "fichier.kmz")
+            with open(kmz_path, "wb") as f:
+                f.write(fichier_kmz.read())
+
+            # Décompression KMZ en KML
+            with zipfile.ZipFile(kmz_path, "r") as zf:
+                zf.extractall(tmpdir)
+                kml_files = [f for f in os.listdir(tmpdir) if f.endswith(".kml")]
+                if not kml_files:
+                    return None, "Aucun fichier .kml trouvé dans le .kmz"
+                kml_path = os.path.join(tmpdir, kml_files[0])
+
+            # Lecture KML avec geopandas
+            gdf = gpd.read_file(kml_path, driver='KML')
+
+            # Nettoyage et traitement
+            gdf = gdf.rename(columns={"Name": "BPE"})
+            gdf["COMMANDE"] = nom_commande
+            gdf = gdf[["BPE", "geometry", "COMMANDE"]]
+            gdf = gdf.to_crs(epsg=2154)
+
+            # Export SHP
+            shp_export_path = os.path.join(tmpdir, f"BPE_{nom_commande}.shp")
+            gdf.to_file(shp_export_path, driver='ESRI Shapefile')
+
+            # Retourne aussi le GeoDataFrame traité pour la suite
+            return gdf, shp_export_path
+
+    except Exception as e:
+        return None, f"Erreur lors du traitement KMZ : {e}"
+
+def traiter_gdb_thd_zones(fichier_gdb):
+    import tempfile
+
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Sauvegarder le fichier GDB temporairement
+            gdb_path = os.path.join(tmpdir, "fichier.gdb")
+            if fichier_gdb.name.endswith(".zip"):
+                with zipfile.ZipFile(fichier_gdb, "r") as zip_ref:
+                    zip_ref.extractall(gdb_path)
+            else:
+                with open(gdb_path, "wb") as f:
+                    f.write(fichier_gdb.read())
+
+            # Chercher une couche avec les colonnes nécessaires
+            layers = fiona.listlayers(gdb_path)
+            selected_layer = None
+            for layer in layers:
+                sample = gpd.read_file(gdb_path, layer=layer).head(1)
+                if all(col in sample.columns for col in ["DSP", "ID_DSP", "Z_BPE"]):
+                    selected_layer = layer
+                    break
+
+            if not selected_layer:
+                return None, "Aucune couche avec colonnes DSP, ID_DSP, Z_BPE trouvée."
+
+            gdf = gpd.read_file(gdb_path, layer=selected_layer)
+            gdf = gdf.to_crs(epsg=2154)
+
+            # On filtre pour les Z_BPE valides
+            zones_valides = [f"THD ZONE {i}" for i in range(1, 5)]
+            gdf = gdf[gdf["Z_BPE"].isin(zones_valides)].copy()
+
+            # Buffer 5m
+            gdf["geometry"] = gdf.buffer(5)
+
+            # Dictionnaire par zone
+            zones_bufferisees = {
+                zone: gdf[gdf["Z_BPE"] == zone].copy()
+                for zone in zones_valides
+            }
+
+            return zones_bufferisees, None
+
+    except Exception as e:
+        return None, f"Erreur lors du traitement GDB : {e}"
 
 # --- Fonction pour push sur GitHub ---
 def push_to_github(token, repo, path_in_repo, local_filepath, commit_message="Mise à jour fichier DRI"):
@@ -113,9 +401,7 @@ elif st.session_state["authenticated"]:
         if st.button("Ajouter une nouvelle fiche DRI"):
             st.session_state["current_section"] = "ajout"
             st.session_state["ligne_temporaire"] = None
-    with col3:
-        if st.button("TCD MA"):
-            st.session_state["current_section"] = "tcd_ma"
+    
     with col4:
         if st.button("Analyse des données"):
             st.session_state["current_section"] = "analyse_donnees"
@@ -307,6 +593,83 @@ elif st.session_state["authenticated"]:
             st.success("Fiche prête à être enregistrée :")
             df_temp = pd.DataFrame([st.session_state["ligne_temporaire"]])
             st.dataframe(df_temp)
+            # Traitement du fichier KMZ après soumission
+            fichier_kmz = st.session_state["ligne_temporaire"].get("FICHIER_KMZ")
+            nom_commande = st.session_state["ligne_temporaire"].get("NOM_COMMANDE")
+        
+            if fichier_kmz and nom_commande:
+                gdf_kmz, chemin_shp = traiter_kmz(fichier_kmz, nom_commande)
+                if gdf_kmz is None:
+                    st.error(f"Erreur dans le traitement du fichier KMZ : {chemin_shp}")
+                else:
+                    st.success(f"KMZ traité et exporté avec succès : {chemin_shp}")
+                    # Tu peux enregistrer chemin_shp dans le session_state si besoin
+                    st.session_state["shp_kmz_export"] = chemin_shp
+            else:
+                st.warning("Fichier KMZ ou nom de commande manquant pour le traitement.")
+                
+            fichier_gdb = st.session_state["ligne_temporaire"].get("FICHIER_GDB")
+            if fichier_gdb:
+                thd_buffers, err_gdb = traiter_gdb_thd_zones(fichier_gdb)
+                if thd_buffers is None:
+                    st.error(f"Erreur GDB : {err_gdb}")
+                else:
+                    st.success("Zones THD extraites et bufferisées avec succès.")
+                    st.session_state["thd_buffers"] = thd_buffers  # Pour usage ultérieur
+            else:
+                st.warning("Fichier GDB non fourni.")
+
+            if gdf_kmz is not None and thd_buffers is not None:
+                gdf_final, err_thd = attribuer_thd_extension(gdf_kmz, thd_buffers)
+                if gdf_final is None:
+                    st.error(f"Erreur attribution THD : {err_thd}")
+                else:
+                    st.success("Attribution THD effectuée avec succès.")
+                    st.dataframe(gdf_final[["BPE", "COMMANDE", "DISTANCE", "THD_EXTENSION", "Z_BPE"]])
+                    st.session_state["gdf_final"] = gdf_final  # Pour la synthèse finale
+
+            if gdf_final is not None:
+                gdf_synth, shp_synth_path, err_synth = generer_synthese_finale(gdf_final, nom_commande)
+                if gdf_synth is None:
+                    st.error(f"Erreur synthèse finale : {err_synth}")
+                else:
+                    st.success("Fichier synthèse THD généré avec succès.")
+                    st.dataframe(gdf_synth[["BPE", "THD_ACTUELLE", "THD_EXTENSION", "THD_FINALE", "GAIN_ENTREPRISE"]])
+                    st.session_state["gdf_synthese"] = gdf_synth
+                    st.session_state["shp_synthese"] = shp_synth_path
+                image_tcd_buf, err_img = generer_image_tcd_ma(gdf_synth, nom_commande)
+                if image_tcd_buf:
+                    st.image(image_tcd_buf, caption="TCD MA généré")
+                    st.session_state["img_tcd_ma"] = image_tcd_buf
+                else:
+                    st.warning(f"TCD image non générée : {err_img}")
+
+                # Création du ZIP final
+                chemin_zip, err_zip = creer_zip_final(
+                    st.session_state["shp_kmz_export"],
+                    st.session_state["shp_synthese"],
+                    st.session_state["img_tcd_ma"],
+                    nom_commande
+                )
+            
+                if chemin_zip:
+                    with open(chemin_zip, "rb") as f:
+                        st.download_button(
+                            label="Télécharger le ZIP final",
+                            data=f,
+                            file_name=f"{nom_commande}_EXPORT.zip",
+                            mime="application/zip"
+                        )
+                else:
+                    st.error(f"Erreur lors de la création du ZIP : {err_zip}")
+
+                    with open(shp_synth_path, "rb") as f:
+                        st.download_button(
+                            label=f"Télécharger SHP Synthèse ({nom_commande})",
+                            data=f,
+                            file_name=f"{nom_commande}_synthese.shp",
+                            mime="application/octet-stream"
+                        )
 
             col1, col2 = st.columns(2)
             with col1:
@@ -336,131 +699,6 @@ elif st.session_state["authenticated"]:
                 if st.button("Ajouter une autre fiche"):
                     st.session_state["ligne_temporaire"] = None
                     st.rerun()
-
-    elif section == "tcd_ma":
-        st.subheader("Analyse TCD - Marché Adressable")
-
-        uploaded_file = st.file_uploader(
-            "Déposez une archive ZIP contenant un shapefile (.shp, .shx, .dbf, etc.)",
-            type=["zip"],
-            key=st.session_state.get("upload_key", "upload")
-        )
-
-        if uploaded_file:
-            with tempfile.TemporaryDirectory() as tmpdir:
-                zip_path = os.path.join(tmpdir, "shapefile.zip")
-                with open(zip_path, "wb") as f:
-                    f.write(uploaded_file.read())
-                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                    zip_ref.extractall(tmpdir)
-
-                shp_files = [f for f in os.listdir(tmpdir) if f.endswith(".shp")]
-                if not shp_files:
-                    st.error("Aucun fichier .shp trouvé dans l'archive.")
-                else:
-                    shp_path = os.path.join(tmpdir, shp_files[0])
-                    try:
-                        gdf = gpd.read_file(shp_path)
-                        required_cols = {"GAIN ENTRE", "NB_SALARIE", "SIRET"}
-                        if not required_cols.issubset(gdf.columns):
-                            st.error(f"Colonnes manquantes : {required_cols - set(gdf.columns)}")
-                        else:
-                            pivot = pd.pivot_table(
-                                gdf,
-                                index="NB_SALARIE",
-                                columns="GAIN ENTRE",
-                                values="SIRET",
-                                aggfunc="count",
-                                margins=True,
-                                margins_name="Total général",
-                                fill_value=0
-                            )
-
-                            ordered_cols = [
-                                "Nouvellement forfaitaire",
-                                "Changement forfaitaire",
-                                "Pas de changement"
-                            ]
-                            existing_cols = [col for col in ordered_cols if col in pivot.columns]
-                            pivot = pivot[existing_cols + ["Total général"]]
-                            pivot = pivot.sort_index()
-
-                            st.session_state["pivot"] = pivot
-
-                            counts = gdf["GAIN ENTRE"].value_counts()
-                            phrases = []
-                            if "Nouvellement forfaitaire" in counts:
-                                phrases.append(f"- {counts['Nouvellement forfaitaire']} entreprises de 1 salarié et plus deviennent éligibles forfaitairement")
-                            if "Changement forfaitaire" in counts:
-                                phrases.append(f"- {counts['Changement forfaitaire']} entreprises de 1 salarié et plus changent de zone forfaitaire positivement")
-
-                            st.session_state["phrases"] = phrases
-
-                            st.subheader("Tableau Croisé Dynamique")
-
-                            def highlight_table(df):
-                                styles = pd.DataFrame('', index=df.index, columns=df.columns)
-                                styles.loc["Total général", :] = 'background-color: #f5e6cc'
-                                styles.loc[:, "Total général"] = 'background-color: #e0f7fa'
-                                styles.iloc[:, 0] = 'background-color: #f0f0f0'
-                                return styles
-
-                            styled_df = pivot.style.apply(highlight_table, axis=None)
-                            st.dataframe(styled_df)
-
-                            st.subheader("Résumé")
-                            for phrase in phrases:
-                                st.markdown(phrase)
-
-                            fig, ax = plt.subplots(figsize=(11, len(pivot) * 0.6 + len(phrases) * 0.6 + 2))
-                            y_offset = 0.1
-                            for i, phrase in enumerate(phrases):
-                                ax.text(0, 1 - y_offset * (i + 1), phrase, fontsize=10, ha='left')
-                            ax.axis('off')
-
-                            table_data = [[idx] + list(row) for idx, row in pivot.iterrows()]
-                            col_labels = ["NB_SALARIE"] + pivot.columns.to_list()
-
-                            table = ax.table(
-                                cellText=table_data,
-                                colLabels=col_labels,
-                                loc='center',
-                                cellLoc='center'
-                            )
-                            table.auto_set_font_size(False)
-                            table.set_fontsize(10)
-                            table.scale(1.2, 1.3)
-
-                            for key, cell in table.get_celld().items():
-                                row, col = key
-                                cell.set_text_props(wrap=True)
-                                if row == 0:
-                                    cell.set_facecolor('#d3d3d3')
-                                    cell.set_text_props(weight='bold')
-                                elif col == 0:
-                                    cell.set_facecolor('#f0f0f0')
-                                if row > 0 and pivot.index[row - 1] == "Total général":
-                                    cell.set_facecolor('#f5e6cc')
-                                    cell.set_text_props(weight='bold')
-
-                            buf = BytesIO()
-                            plt.savefig(buf, format="png", bbox_inches='tight', dpi=300)
-                            buf.seek(0)
-
-                            st.download_button(
-                                label="Télécharger l'image du TCD",
-                                data=buf,
-                                file_name="TCD_MA.png",
-                                mime="image/png"
-                            )
-
-                            if st.button("Renouveler l'opération"):
-                                st.session_state["upload_key"] = f"upload_{int(time.time())}"
-                                st.session_state.pop("pivot", None)
-                                st.session_state.pop("phrases", None)
-                                st.rerun()
-                    except Exception as e:
-                        st.error(f"Erreur de lecture du shapefile : {e}")
 
     elif section == "analyse_donnees":
         st.subheader("Analyse des données - Synthèse Graphique et Statistique")
