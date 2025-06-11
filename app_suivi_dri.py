@@ -292,10 +292,10 @@ elif st.session_state["authenticated"]:
                         "ETAT GEOMARKETING": "",
                         "RESP GEOMARKET": "",
                         "CONCLUSION": "",
-                        "COMMENTAIRE": commentaire
+                        "COMMENTAIRE": commentaire,
                         "FICHIER_KMZ": fichier_kmz,
                         "FICHIER_GDB": fichier_gdb,
-                        "NOM_COMMANDE": nom_commande,
+                        "NOM_COMMANDE": nom_commande
                     }
 
                     st.session_state["ligne_temporaire"] = ligne
