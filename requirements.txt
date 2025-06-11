@@ -1,8 +1,10 @@
 streamlit
 pandas
 openpyxl
-requests
 geopandas
-matplotlib
+fiona
 shapely
+matplotlib
 plotly
+requests
+fastkml
