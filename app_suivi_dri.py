@@ -599,7 +599,6 @@ elif st.session_state["authenticated"]:
             
             st.dataframe(df_temp_clean)
 
-            st.dataframe(df_temp)
             # Traitement du fichier KMZ après soumission
             fichier_kmz = st.session_state["ligne_temporaire"].get("FICHIER_KMZ")
             nom_commande = st.session_state["ligne_temporaire"].get("NOM_COMMANDE")
