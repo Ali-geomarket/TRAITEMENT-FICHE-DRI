@@ -249,7 +249,7 @@ def traiter_kmz(fichier_kmz, nom_commande):
 
             # Export SHP
             shp_export_path = os.path.join(tmpdir, f"BPE_{nom_commande}.shp")
-            gdf.to_file(shp_export_path, driver='ESRI Shapefile')
+            gdf.to_file(shp_export_path, driver='ESRI Shapefile', geometry_type='POINT')
 
             # Retourne aussi le GeoDataFrame traité pour la suite
             return gdf, shp_export_path
@@ -268,8 +268,14 @@ def traiter_gdb_thd_zones(fichier_gdb):
                 with zipfile.ZipFile(fichier_gdb, "r") as zip_ref:
                     zip_ref.extractall(gdb_path)
             else:
-                with open(gdb_path, "wb") as f:
-                    f.write(fichier_gdb.read())
+                with zipfile.ZipFile(fichier_gdb, "r") as zip_ref:
+                    zip_ref.extractall(tmpdir)
+                
+                # Localise le dossier .gdb
+                gdb_dirs = [os.path.join(tmpdir, d) for d in os.listdir(tmpdir) if d.endswith(".gdb")]
+                if not gdb_dirs:
+                    return None, "Aucun dossier .gdb trouvé dans l'archive"
+                gdb_path = gdb_dirs[0]
 
             # Chercher une couche avec les colonnes nécessaires
             layers = fiona.listlayers(gdb_path)
@@ -634,7 +640,8 @@ elif st.session_state["authenticated"]:
                     st.dataframe(gdf_final[["BPE", "COMMANDE", "DISTANCE", "THD_EXTENSION", "Z_BPE"]])
                     st.session_state["gdf_final"] = gdf_final  # Pour la synthèse finale
 
-            if gdf_final is not None:
+            # Vérification de l'existence de gdf_final avant de poursuivre
+            if 'gdf_final' in locals() and gdf_final is not None:
                 gdf_synth, shp_synth_path, err_synth = generer_synthese_finale(gdf_final, nom_commande)
                 if gdf_synth is None:
                     st.error(f"Erreur synthèse finale : {err_synth}")
@@ -643,32 +650,34 @@ elif st.session_state["authenticated"]:
                     st.dataframe(gdf_synth[["BPE", "THD_ACTUELLE", "THD_EXTENSION", "THD_FINALE", "GAIN_ENTREPRISE"]])
                     st.session_state["gdf_synthese"] = gdf_synth
                     st.session_state["shp_synthese"] = shp_synth_path
-                image_tcd_buf, err_img = generer_image_tcd_ma(gdf_synth, nom_commande)
-                if image_tcd_buf:
-                    st.image(image_tcd_buf, caption="TCD MA généré")
-                    st.session_state["img_tcd_ma"] = image_tcd_buf
-                else:
-                    st.warning(f"TCD image non générée : {err_img}")
-
-                # Création du ZIP final
-                chemin_zip, err_zip = creer_zip_final(
-                    st.session_state["shp_kmz_export"],
-                    st.session_state["shp_synthese"],
-                    st.session_state["img_tcd_ma"],
-                    nom_commande
-                )
             
-                if chemin_zip:
-                    with open(chemin_zip, "rb") as f:
-                        st.download_button(
-                            label="Télécharger le ZIP final",
-                            data=f,
-                            file_name=f"{nom_commande}_EXPORT.zip",
-                            mime="application/zip"
-                        )
-                else:
-                    st.error(f"Erreur lors de la création du ZIP : {err_zip}")
-
+                    # Génération de l'image TCD MA
+                    image_tcd_buf, err_img = generer_image_tcd_ma(gdf_synth, nom_commande)
+                    if image_tcd_buf:
+                        st.image(image_tcd_buf, caption="TCD MA généré")
+                        st.session_state["img_tcd_ma"] = image_tcd_buf
+                    else:
+                        st.warning(f"TCD image non générée : {err_img}")
+            
+                    # Création du ZIP final
+                    chemin_zip, err_zip = creer_zip_final(
+                        st.session_state["shp_kmz_export"],
+                        st.session_state["shp_synthese"],
+                        st.session_state["img_tcd_ma"],
+                        nom_commande
+                    )
+                    if chemin_zip:
+                        with open(chemin_zip, "rb") as f:
+                            st.download_button(
+                                label="📦 Télécharger le ZIP final",
+                                data=f,
+                                file_name=f"{nom_commande}_EXPORT.zip",
+                                mime="application/zip"
+                            )
+                    else:
+                        st.error(f"Erreur lors de la création du ZIP : {err_zip}")
+            
+                    # Export SHP seul en option
                     with open(shp_synth_path, "rb") as f:
                         st.download_button(
                             label=f"Télécharger SHP Synthèse ({nom_commande})",
@@ -676,6 +685,9 @@ elif st.session_state["authenticated"]:
                             file_name=f"{nom_commande}_synthese.shp",
                             mime="application/octet-stream"
                         )
+            else:
+                st.warning("Le traitement n'a pas abouti — gdf_final est introuvable ou vide.")
+
 
             col1, col2 = st.columns(2)
             with col1:
