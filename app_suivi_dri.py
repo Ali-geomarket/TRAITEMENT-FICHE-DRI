@@ -592,6 +592,13 @@ elif st.session_state["authenticated"]:
         else:
             st.success("Fiche prête à être enregistrée :")
             df_temp = pd.DataFrame([st.session_state["ligne_temporaire"]])
+            
+            # Supprimer les colonnes qui posent problème (UploadedFile)
+            colonnes_non_affichables = ["FICHIER_KMZ", "FICHIER_GDB"]
+            df_temp_clean = df_temp.drop(columns=colonnes_non_affichables, errors="ignore")
+            
+            st.dataframe(df_temp_clean)
+
             st.dataframe(df_temp)
             # Traitement du fichier KMZ après soumission
             fichier_kmz = st.session_state["ligne_temporaire"].get("FICHIER_KMZ")
