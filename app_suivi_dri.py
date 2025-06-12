@@ -220,42 +220,37 @@ def attribuer_thd_extension(gdf_bpe, thd_buffers):
         return None, f"Erreur attribution THD : {e}"
 
 
-def traiter_kmz(fichier_kmz, nom_commande):
-    import tempfile
-    from pathlib import Path
-
+def traiter_bpe_shp(fichier_shp, nom_commande):
     try:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            kmz_path = os.path.join(tmpdir, "fichier.kmz")
-            with open(kmz_path, "wb") as f:
-                f.write(fichier_kmz.read())
+        gdf = gpd.read_file(fichier_shp)
 
-            # Décompression KMZ en KML
-            with zipfile.ZipFile(kmz_path, "r") as zf:
-                zf.extractall(tmpdir)
-                kml_files = [f for f in os.listdir(tmpdir) if f.endswith(".kml")]
-                if not kml_files:
-                    return None, "Aucun fichier .kml trouvé dans le .kmz"
-                kml_path = os.path.join(tmpdir, kml_files[0])
+        # Vérifie géométrie POINT
+        if gdf.geom_type.unique()[0] != "Point":
+            return None, "Le fichier BPE doit contenir uniquement des points."
 
-            # Lecture KML avec geopandas
-            gdf = gpd.read_file(kml_path, driver='KML')
+        # Garde seulement la colonne utile
+        if "Name" in gdf.columns:
+            gdf = gdf[["Name", "geometry"]].rename(columns={"Name": "BPE"})
+        elif "BPE" in gdf.columns:
+            gdf = gdf[["BPE", "geometry"]]
+        else:
+            return None, "Colonne 'Name' ou 'BPE' absente du shapefile."
 
-            # Nettoyage et traitement
-            gdf = gdf.rename(columns={"Name": "BPE"})
-            gdf["COMMANDE"] = nom_commande
-            gdf = gdf[["BPE", "geometry", "COMMANDE"]]
-            gdf = gdf.to_crs(epsg=2154)
+        # Ajoute la colonne COMMANDE
+        gdf["COMMANDE"] = nom_commande
 
-            # Export SHP
-            shp_export_path = os.path.join(tmpdir, f"BPE_{nom_commande}.shp")
-            gdf.to_file(shp_export_path, driver='ESRI Shapefile', geometry_type='POINT')
+        # Projection en 2154
+        gdf = gdf.to_crs(epsg=2154)
 
-            # Retourne aussi le GeoDataFrame traité pour la suite
-            return gdf, shp_export_path
+        # Export SHP
+        temp_dir = tempfile.mkdtemp()
+        output_path = os.path.join(temp_dir, f"BPE_{nom_commande}.shp")
+        gdf.to_file(output_path)
+
+        return gdf, output_path
 
     except Exception as e:
-        return None, f"Erreur lors du traitement KMZ : {e}"
+        return None, f"Erreur lors du traitement du fichier SHP : {e}"
 
 def traiter_gdb_thd_zones(fichier_gdb):
     import tempfile
@@ -608,7 +603,7 @@ elif st.session_state["authenticated"]:
             # Traitement du fichier KMZ après soumission
             fichier_kmz = st.session_state["ligne_temporaire"].get("FICHIER_KMZ")
             nom_commande = st.session_state["ligne_temporaire"].get("NOM_COMMANDE")
-        
+
             if fichier_kmz and nom_commande:
                 gdf_kmz, chemin_shp = traiter_kmz(fichier_kmz, nom_commande)
                 if gdf_kmz is None:
