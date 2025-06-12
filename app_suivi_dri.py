@@ -335,7 +335,7 @@ def push_to_github(token, repo, path_in_repo, local_filepath, commit_message="Mi
 def try_push_to_github():
     try:
         token = st.secrets["GITHUB_TOKEN"]
-        repo = "Ali-geomarket/fiche-dri-app"
+        repo = "Ali-geomarket/TRAITEMENT-FICHE-DRI"
         path_in_repo = "Suivi_demandes_AUTOMATISATION.xlsx"
         status, result = push_to_github(token, repo, path_in_repo, suivi_file_path)
         if status in [200, 201]:
