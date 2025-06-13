@@ -547,7 +547,7 @@ elif st.session_state["authenticated"]:
                 reseau = st.text_input("Réseau")
                 type_demande_input = st.radio("Type de demande", ["1 - DEPASSEMENT DE COUT", "2 - DEMANDE DE MA"])
                 nom_commande = st.text_input("Nom de la commande (ex: OXO_222-1)")
-                fichier_kmz = st.file_uploader("Fichier KMZ des nouveaux BPE", type=["kmz"])
+                fichier_kmz = st.file_uploader("Fichier BPE (KMZ ou archive ZIP de SHP)", type=["kmz", "zip"])
                 fichier_gdb = st.file_uploader("Fichier GDB des parcelles réseau", type=["gdb", "zip"])
                 demande_type = "DEPASSEMENT DE COUT" if type_demande_input.startswith("1") else "DEMANDE DE MA"
                 commentaire = st.text_area("Commentaire (optionnel)")
