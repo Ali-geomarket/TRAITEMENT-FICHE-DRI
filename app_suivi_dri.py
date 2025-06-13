@@ -600,20 +600,41 @@ elif st.session_state["authenticated"]:
             
             st.dataframe(df_temp_clean)
 
-            # Traitement du fichier KMZ après soumission
+            # Traitement du fichier BPE (KMZ ou archive SHP) après soumission
             fichier_kmz = st.session_state["ligne_temporaire"].get("FICHIER_KMZ")
             nom_commande = st.session_state["ligne_temporaire"].get("NOM_COMMANDE")
-
+            
             if fichier_kmz and nom_commande:
-                gdf_kmz, chemin_shp = traiter_kmz(fichier_kmz, nom_commande)
-                if gdf_kmz is None:
-                    st.error(f"Erreur dans le traitement du fichier KMZ : {chemin_shp}")
+                if fichier_kmz.name.endswith(".zip"):
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        zip_path = os.path.join(tmpdir, "shapefile.zip")
+                        with open(zip_path, "wb") as f:
+                            f.write(fichier_kmz.read())
+                        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                            zip_ref.extractall(tmpdir)
+            
+                        shp_files = [f for f in os.listdir(tmpdir) if f.endswith(".shp")]
+                        if not shp_files:
+                            st.error("Aucun fichier .shp trouvé dans l'archive.")
+                            gdf_kmz, chemin_shp = None, "Pas de .shp trouvé"
+                        else:
+                            shp_path = os.path.join(tmpdir, shp_files[0])
+                            gdf_kmz, chemin_shp = traiter_bpe_shp(shp_path, nom_commande)
+            
+                elif fichier_kmz.name.endswith(".kmz"):
+                    gdf_kmz, chemin_shp = traiter_kmz(fichier_kmz, nom_commande)
                 else:
-                    st.success(f"KMZ traité et exporté avec succès : {chemin_shp}")
-                    # Tu peux enregistrer chemin_shp dans le session_state si besoin
+                    gdf_kmz, chemin_shp = None, "Format de fichier non supporté (utilisez KMZ ou ZIP de SHP)."
+            
+                if gdf_kmz is None:
+                    st.error(f"Erreur dans le traitement du fichier BPE : {chemin_shp}")
+                else:
+                    st.success(f"Fichier BPE traité et exporté avec succès : {chemin_shp}")
                     st.session_state["shp_kmz_export"] = chemin_shp
             else:
-                st.warning("Fichier KMZ ou nom de commande manquant pour le traitement.")
+                st.warning("Fichier BPE (KMZ ou ZIP) ou nom de commande manquant pour le traitement.")
+                    
+
                 
             fichier_gdb = st.session_state["ligne_temporaire"].get("FICHIER_GDB")
             if fichier_gdb:
