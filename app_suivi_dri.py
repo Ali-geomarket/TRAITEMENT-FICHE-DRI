@@ -598,12 +598,12 @@ elif st.session_state["authenticated"]:
                 date_reception = st.date_input("Date de réception (jj/mm/aaaa)", format="DD/MM/YYYY")
                 reseau = st.text_input("Réseau")
                 type_demande_input = st.radio("Type de demande", ["1 - DEPASSEMENT DE COUT", "2 - DEMANDE DE MA"])
-                nom_commande = st.text_input("Nom de la commande (ex: OXO_222-1)")
-                fichier_kmz = st.file_uploader("Fichier BPE (KMZ ou archive ZIP de SHP)", type=["kmz", "zip"])
-                fichier_gdb = st.file_uploader("Fichier GDB des parcelles réseau", type=["gdb", "zip"])
                 demande_type = "DEPASSEMENT DE COUT" if type_demande_input.startswith("1") else "DEMANDE DE MA"
                 commentaire = st.text_area("Commentaire (optionnel)")
+                fichier_kmz = st.file_uploader("Fichier BPE (KMZ ou archive ZIP de SHP)", type=["kmz", "zip"])
+                fichier_gdb = st.file_uploader("Fichier GDB des parcelles réseau", type=["gdb", "zip"])
                 fiche_dri_file = st.file_uploader("Fichier Excel de la fiche DRI", type="xlsx")
+                fichier_bce = st.file_uploader("Fichier des entreprises (BCE) au format CSV UTF-8", type=["csv"])
                 submit = st.form_submit_button("Ajouter la fiche")
 
             if submit and fiche_dri_file:
@@ -634,6 +634,7 @@ elif st.session_state["authenticated"]:
                         "COMMENTAIRE": commentaire,
                         "FICHIER_KMZ": fichier_kmz,
                         "FICHIER_GDB": fichier_gdb,
+                        "FICHIER_BCE": fichier_bce,
                         "NOM_COMMANDE": nom_commande
                     }
 
