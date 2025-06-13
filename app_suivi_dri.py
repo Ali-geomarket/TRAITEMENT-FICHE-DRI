@@ -18,6 +18,58 @@ import fiona
 import zipfile
 from fastkml import kml
 
+def traiter_gdb_thd_zones(fichier_gdb_zip):
+    import tempfile
+    import zipfile
+    import os
+
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            zip_path = os.path.join(tmpdir, "gdb.zip")
+            with open(zip_path, "wb") as f:
+                f.write(fichier_gdb_zip.read())
+
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(tmpdir)
+
+            # Trouver le dossier .gdb
+            gdb_dirs = [os.path.join(tmpdir, d) for d in os.listdir(tmpdir) if d.endswith(".gdb")]
+            if not gdb_dirs:
+                return None, "Aucun dossier .gdb trouvé dans l'archive"
+            gdb_path = gdb_dirs[0]
+
+            import fiona
+            import geopandas as gpd
+
+            # Identifier une couche contenant les colonnes nécessaires
+            layers = fiona.listlayers(gdb_path)
+            selected_layer = None
+            for layer in layers:
+                sample = gpd.read_file(gdb_path, layer=layer).head(1)
+                if all(col in sample.columns for col in ["DSP", "ID_DSP", "Z_BPE"]):
+                    selected_layer = layer
+                    break
+
+            if not selected_layer:
+                return None, "Aucune couche avec colonnes DSP, ID_DSP, Z_BPE trouvée"
+
+            gdf = gpd.read_file(gdb_path, layer=selected_layer)
+            gdf = gdf.to_crs(epsg=2154)
+
+            zones_valides = [f"THD ZONE {i}" for i in range(1, 5)]
+            gdf = gdf[gdf["Z_BPE"].isin(zones_valides)].copy()
+            gdf["geometry"] = gdf.buffer(5)
+
+            zones_bufferisees = {
+                zone: gdf[gdf["Z_BPE"] == zone].copy()
+                for zone in zones_valides
+            }
+
+            return zones_bufferisees, None
+
+    except Exception as e:
+        return None, f"Erreur lors du traitement du fichier GDB : {e}"
+
 def creer_zip_final(chemin_shp1, chemin_shp2, image_tcd_buf, nom_commande):
     import shutil
     import glob
@@ -638,39 +690,16 @@ elif st.session_state["authenticated"]:
                 
             fichier_gdb = st.session_state["ligne_temporaire"].get("FICHIER_GDB")
             nom_commande = st.session_state["ligne_temporaire"].get("NOM_COMMANDE")
-            
+
             if fichier_gdb:
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    zip_path = os.path.join(tmpdir, "gdb.zip")
-                    with open(zip_path, "wb") as f:
-                        f.write(fichier_gdb.read())
-            
-                    try:
-                        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                            zip_ref.extractall(tmpdir)
-            
-                        gdb_dirs = [d for d in os.listdir(tmpdir) if d.endswith(".gdb")]
-                        if not gdb_dirs:
-                            st.error("Aucun dossier .gdb trouvé dans l'archive.")
-                        else:
-                            gdb_path = os.path.join(tmpdir, gdb_dirs[0])
-                            layer_name = "Phase_5_eligibilite_OXO"  # à adapter si besoin
-            
-                            try:
-                                thd_buffers, err_gdb = traiter_gdb_thd_zones(gdb_path, layer=layer_name)
-                                if thd_buffers is None:
-                                    st.error(f"Erreur GDB : {err_gdb}")
-                                else:
-                                    st.success("Zones THD extraites et bufferisées avec succès.")
-                                    st.session_state["thd_buffers"] = thd_buffers
-                            except Exception as e:
-                                st.error(f"Impossible de lire la couche '{layer_name}' : {e}")
-            
-                    except Exception as e:
-                        st.error(f"Erreur de décompression du ZIP GDB : {e}")
+                thd_buffers, err_gdb = traiter_gdb_thd_zones(fichier_gdb)
+                if thd_buffers is None:
+                    st.error(f"Erreur GDB : {err_gdb}")
+                else:
+                    st.success("Zones THD extraites et bufferisées avec succès.")
+                    st.session_state["thd_buffers"] = thd_buffers
             else:
                 st.warning("Fichier GDB non fourni.")
-
 
             if gdf_kmz is not None and thd_buffers is not None:
                 gdf_final, err_thd = attribuer_thd_extension(gdf_kmz, thd_buffers)
